@@ -1,34 +1,46 @@
 <?php
-
+error_reporting(E_ALL & ~E_DEPRECATED);
 require_once 'vendor/autoload.php';
 require 'inc/config.php';
-require 'inc/certDompdf.php';
-require 'inc/certMailer.php';
-
 ini_set('memory_limit', MEMORY_LIMIT);
 setlocale(LC_ALL, LOCALE);
 date_default_timezone_set('Etc/UTC');
 
+use Egulias\EmailValidator\EmailValidator;
+use Egulias\EmailValidator\Validation\DNSCheckValidation;
+use Egulias\EmailValidator\Validation\SpoofCheckValidation;
+use Egulias\EmailValidator\Validation\MultipleValidationWithAnd;
+use Egulias\EmailValidator\Validation\RFCValidation;
+
 $def_options = [
     ['i', 'input', \GetOpt\GetOpt::REQUIRED_ARGUMENT, 'HTML template file'],
-    ['o', 'output', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'PDF output file/directory', 'output.pdf'],
-    ['y', 'offset', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Y offset of HTML cell', 0],
-    ['d', 'data', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'CSV file with data to fill template', ''],
-    ['p', 'page', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Page size', 'A4'],
-    ['e', 'email_col', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Email column name in CSV file', 'email'],
-    ['s', 'subject', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Email subject', 'Certificate'],
-    ['m', 'message', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Email message or a path to file with message', 'Here is your certificate'],
-    ['r', 'replyto', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Reply to email'],
-    ['a', 'attach', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Additional attachment'],
     ['?', 'help', \GetOpt\GetOpt::NO_ARGUMENT, 'Show this help and quit'],
-    ['f', 'font', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Add font to TCPDF'],
+	[null, 'mirror-margins', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Use mirror margins', 0],
+	[null, 'use-kerning', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Use kerning', false],
+	[null, 'format', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Paper format', 'A4-L'],
+	[null, 'watermark-image', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Path to Watermark Image', ''],
+	[null, 'watermark-image-alpha', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Alpha for Watermark Image', 20],
+	[null, 'watermark-image-alpha-blend', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Alpha Blend for Watermark Image', 'Normal'],
+	[null, 'watermark-text', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Watermark Text', ''],
+	[null, 'watermark-text-alpha', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Alpha for Watermark Text', 20],
+    ['d', 'data', \GetOpt\GetOpt::REQUIRED_ARGUMENT, 'CSV file with data to fill template', ''],	
+	[null, 'margin-top', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Margin top', 0],
+	[null, 'margin-left', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Margin left', 0],
+	[null, 'margin-right', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Margin right', 0],
+	[null, 'margin-bottom', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Margin bottom', 0],
+    ['e', 'email_col', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Email column name in CSV file', 'email'],
+    ['o', 'output', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'PDF output file/directory', ''],
+	['s', 'subject', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Email subject', 'Certificate'],
+	['m', 'message', \GetOpt\GetOpt::REQUIRED_ARGUMENT, 'Path to file with message', 'Here is your certificate'],
+	[null, 'test', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Test - generate PDF without sending emails'],
+	['a', 'attach', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Additional attachment', ''],
+	[null, 'parse', \GetOpt\GetOpt::OPTIONAL_ARGUMENT, 'Additional places', ''],
 ];
 $getopt = new \GetOpt\GetOpt($def_options);
 try {
     try {
         $getopt->process();
     } catch (Missing $exception) {
-        // catch missing exceptions if help is requested
         if (!$getopt->getOption('help')) {
             throw $exception;
         }
@@ -38,144 +50,220 @@ try {
     echo PHP_EOL.$getopt->getHelpText();
     exit;
 }
+$options = $getopt->getOptions();
+
 
 if ($getopt->getOption('help')) {
     echo $getopt->getHelpText();
     exit;
 }
-$options = $getopt->getOptions();
-
-if (isset($options['f'])) {
-    $font_file = $options['f'];
-    // convert TTF font to TCPDF format and store it on the fonts folder
-    $fontname = TCPDF_FONTS::addTTFfont($font_file);
-    echo 'Font added: '.$fontname."\n";
-    echo "Change DEFAULT_FONT value to {$fontname} in config.php to use the new font!\n";
-    exit;
-}
-
-// if (!isset($options['c']) || !isset($options['o'])) {
-//     exit;
-// }
-
-// Background image
-// $img_file = '';
-// if (isset($options['i'])) {
-    // $img_file = realpath($options['i']);
-// }
 
 // Text
-$input_html = file_get_contents($options['i']);
-
-// Page size
-$size = 'A4';
-if (isset($options['p'])) {
-    if (preg_match('/\d+\.*\d*\s*,\s*\d+\.*\d*/', $options['p'])) {
-        $size = array_map('floatval', split('\s*,\s*', $options['p']));
-    } elseif (is_numeric($options['p'])) {
-        $size = [floatval($options['p']), floatval($options['p'])];
-    } else {
-        $size = $options['p'];
-    }
-}
+if(!file_exists($options['i'])):
+	echo "Can't load HTML template file" . "\r\n";;
+    exit;
+endif;
+$html = file_get_contents($options['i']);
 
 // CSV Data file
 $data_file = '';
-if (isset($options['d'])) {
-    $data_file = $options['d'];
-}
+if(!file_exists($options['data'])):
+	echo "CSV file doesn't exist" . "\r\n";
+    exit;
+endif;
+$data_file = $options['data'];
 
-// Output file/directory
-$output = $options['o'];
-if (is_dir($output)) {
-    $output = realpath(rtrim($output, '/\\'));
-}
-
-$y_offset = 0;
-if (isset($options['y'])) {
-    $y_offset = floatval($options['y']);
-}
-
-// Send PDF by email
 $email_col_name = 'email';
-$send_by_email = true;
 if (isset($options['e'])) {
     $email_col_name = $options['e'];
 }
 
-$email_subject = 'Certificate of participation';
-if (isset($options['s'])) {
-    $email_subject = $options['s'];
+// Output file/directory
+$output = 'out';
+if (!empty($options['output'])) {
+	if(!file_exists($options['output'])):
+		echo "Output directory doesn't exist" . "\r\n";
+		exit;
+	endif;  
+	$output = $options['output'];
 }
 
-if (isset($options['m'])) {
-    if (is_file($options['m'])) {
-        $email_message = file_get_contents($options['m']);
-    } else {
-        $email_message = $options['m'];
-    }
-}
+if(!file_exists($options['message'])):
+	echo "File email message no exist" . "\r\n";;
+	exit;
+endif;
+$email_message = file_get_contents($options['message']);
 
-if (isset($options['r'])) {
-    if (preg_match('/(.*);(.*@.*)/', $options['r'], $matches)) {
-        $email_from_name = $matches[1];
-        $email_from = $matches[2];
-    } else {
-        $email_from = $options['r'];
-        $email_from_name = $email_from;
-    }
-} else {
-    $email_from = MAIL_USERNAME;
-    $email_from_name = MAIL_USERNAME;
-}
+$attchments = array();
+if(!empty($options['attach'])):
+	$t = explode(',', $options['attach']);
+	foreach($t as $file):
+		if(!file_exists($file)):
+			echo "Can't attach: " . $file . "\r\n";
+		else:
+			$attchments[] = $file;
+		endif;		
+	endforeach;
+endif;
 
-// Get any email attchament
-$attchments = [];
-if (isset($options['a'])) {
-    $attchments = explode(',', $options['a']);
-}
+$parseplaces = array();
+if(!empty($options['parse'])):
+	$t = explode('###', $options['parse']);
+	for($i = 0; $i < count($t); $i+=2):
+		$parseplaces[$t[$i]] = $t[$i+1];
+	endfor;
+endif;
 
-if (!empty($data_file)) {
-    if (false === is_dir($output)) {
-        echo "Output is not a directory. Please, provide a directory to output PDF's\n";
-        exit;
-    }
+if (false !== ($handle = fopen($data_file, 'r'))) {
+	$csv_header = fgetcsv($handle, 1000, DELIMITER);
+	$send_by_email = in_array($email_col_name, $csv_header);
+	$i = 0;
 
-    if (false !== ($handle = fopen($data_file, 'r'))) {
-        $csv_header = fgetcsv($handle, 1000, DELIMITER);
-        $send_by_email = in_array($email_col_name, $csv_header);
-        $i = 0;
-        $mailer = new CertMailer();
-        while (false !== ($data = fgetcsv($handle, 1000, DELIMITER))) {
-            if (count($data) > 0) {
-                $row = [];
-                foreach ($data as $key => $value) {
-                    $row[trim($csv_header[$key])] = preg_replace('/\x{FEFF}/u', '', $value);
-                }
-                print_r($row);
+	while (false !== ($data = fgetcsv($handle, 1000, DELIMITER))) {
+		if (count($data) > 0) {
+			$row = [];
+			foreach ($data as $key => $value) {
+				$row[trim($csv_header[$key])] = preg_replace('/\x{FEFF}/u', '', $value);
+			}
+			
+			$ff = @file_get_contents('.done.emails.txt');
+			if(preg_match('/' . $row[$email_col_name] . '/', $ff)):
+				echo "This email is omitted, because certificate was sent earlier: " . $row[$email_col_name] . "\r\n";
+				continue;
+			endif;
+			
+			////////
+			$temp_dfile = $html;
+			foreach ($row as $key => $value) {
+				$temp_dfile = preg_replace('/\{\{\s*'.$key.'\s*\}\}/', trim($value), $temp_dfile);
+			}
+			$temp_dfile = str_replace('{{ %now% }}', strftime(DATE_FORMAT), $temp_dfile);
+			
+			foreach ($parseplaces as $key => $value) {
+				$temp_dfile = preg_replace('/\{\{\s*'.$key.'\s*\}\}/', trim($value), $temp_dfile);
+			}			
+		
+			///////
+			$temail_message = $email_message;
+			foreach ($row as $key => $value) {
+				$temail_message = preg_replace('/\{\{\s*'.$key.'\s*\}\}/', trim($value), $temail_message);
+			}
+					
+			foreach ($parseplaces as $key => $value) {
+				$temail_message = preg_replace('/\{\{\s*'.$key.'\s*\}\}/', trim($value), $temail_message);
+			}			
+		
+			$temail_message = str_replace('{{ %now% }}', strftime(DATE_FORMAT), $temail_message);
+			
+			print_r($row);
 
-                $output_file = isset($row[$email_col_name]) ? $output.DIRECTORY_SEPARATOR.strtolower(trim($row[$email_col_name])).'.pdf' : $output.DIRECTORY_SEPARATOR.$i.'pdf';
-                // create new PDF document
-                $pdf = new CERTIFICATEDOMPDF('landscape', 'cm', $size, true, 'UTF-8', false, false);
-                $pdf->create_pdf($output_file, $input_html, $y_offset, $row, DATE_FORMAT);
-                unset($pdf);
-                if ($send_by_email && file_exists($output_file)) {
-                    $email_to = $row[$email_col_name];
-                    $email_body = $email_message;
-                    foreach ($row as $key => $value) {
-                        $email_body = preg_replace('/\{\{\s*'.$key.'\s*\}\}/', trim($value), $email_body);
-                    }
-                    $email_body = str_replace('{{ %now% }}', strftime(DATE_FORMAT), $email_body);
+			$output_file = isset($row[$email_col_name]) ? $output.DIRECTORY_SEPARATOR.strtolower(trim($row[$email_col_name])).'.pdf' : $output.DIRECTORY_SEPARATOR.$i.'pdf';
+			// create new PDF document
+			//MPDF
+			//MathJax
+			preg_match('/<svg[^>]*>\s*(<defs.*?>.*?<\/defs>)\s*<\/svg>/', $html, $m);
+			$defs = @$m[1];
+			$html = preg_replace('/<svg[^>]*>\s*<defs.*?<\/defs>\s*<\/svg>/', '', $html);
+			$html = preg_replace('/(<svg[^>]*>)/', "\\1".$defs, $html);
+			preg_match_all('/<svg([^>]*)style="(.*?)"/', $html, $m);
+			for ($i = 0; $i < count($m[0]); $i++) {
+				$style=$m[2][$i];
 
-                    $mailer->send_mail($email_to, $email_subject, $email_body, $email_from, $email_from_name, $output_file, $attchments);
-                }
-                ++$i;
-            }
-        }
+				preg_match('/width: (.*?);/', $style, $wr);
+				$w = $mpdf->ConvertSize($wr[1], 0, $mpdf->FontSize) * $mpdf->dpi/25.4;
 
-        fclose($handle);
-    }
-} else {
-    $pdf = new CERTIFICATEPDF('L', 'cm', $size, true, 'UTF-8', false, false);
-    $pdf->create_pdf($output_file, $input_html, $y_offset, DATE_FORMAT);
+				preg_match('/height: (.*?);/', $style, $hr);
+				$h = $mpdf->ConvertSize($hr[1], 0, $mpdf->FontSize) * $mpdf->dpi/25.4;
+			  
+				$replace = '<svg'.$m[1][$i].' width="'.$w.'" height="'.$h.'" style="'.$m[2][$i].'"';
+				$html = str_replace($m[0][$i], $replace, $html);
+			}
+			  
+			$mpdf = new \Mpdf\Mpdf([
+				'mode' => 'utf-8',
+				'mirrorMargins' => $options['mirror-margins'],
+				'useKerning' => $options['use-kerning'],
+				'format' => $options['format'],
+				'watermarkImgAlphaBlend' => $options['watermark-image-alpha-blend'],
+				'margin_top' => $options['margin-top'],
+				'margin_left' => $options['margin-left'],
+				'margin_right' => $options['margin-right'],
+				'margin_bottom' => $options['margin-bottom'],
+			]);
+			$mpdf->SetTitle('Certificate: ' . $row[$email_col_name]);
+			$mpdf->SetAuthor('Certgen by Nitro <nitro.bystrzyca@gmail.com>');
+			$mpdf->SetCreator('Certgen by Nitro <nitro.bystrzyca@gmail.com>');
+			$mpdf->SetSubject('Certficate');
+
+			if(file_exists($options['watermark-image'])):
+				$mpdf->SetWatermarkImage($options['watermark-image']);
+				$mpdf->showWatermarkImage = true;
+				$mpdf->watermarkImageAlpha = number_format($options['watermark-image-alpha']/100, 1, '.', '');
+			endif;
+
+			if(!empty($options['watermark-text'])):
+			$mpdf->SetWatermarkText($options['watermark-text']);
+			$mpdf->showWatermarkText = true;
+			$mpdf->watermarkTextAlpha = number_format($options['watermark-text-alpha']/100, 1, '.', '');
+			endif;
+
+			$mpdf->SetProtection(array('print','print-highres'));
+			$mpdf->autoScriptToLang = true;
+			$mpdf->baseScript = 1;
+			$mpdf->autoVietnamese = true;
+			$mpdf->autoArabic = true;
+			$mpdf->autoLangToFont = true;
+			$mpdf->WriteHTML($temp_dfile);
+			$mpdf->Output($output_file, "F");
+			//END MPDF
+			if(!isset($options['test'])):
+				$validator = new EmailValidator();
+				$multipleValidations = new MultipleValidationWithAnd([
+					new RFCValidation(),
+					new DNSCheckValidation(),
+					new SpoofCheckValidation(),
+				]);
+				
+				if($validator->isValid($row[$email_col_name], $multipleValidations) != '1'):
+					echo 'Email is invalid:' . $row[$email_col_name] . "\r\n";
+					continue;
+				endif;
+							
+				$transport = (new Swift_SmtpTransport(MAIL_HOST, MAIL_PORT, SMTP_SECURE))
+					->setUsername(MAIL_USERNAME)
+					->setPassword(MAIL_PASSWORD)
+					->setTimeout(MAIL_TIMEOUT)
+				;
+
+				$logger = new Swift_Plugins_Loggers_ArrayLogger();
+				$transport->registerPlugin(new Swift_Plugins_LoggerPlugin($logger));
+
+				// Create the Mailer using your created Transport
+				$mailer = new Swift_Mailer($transport);
+				$mailer->registerPlugin(new Swift_Plugins_AntiFloodPlugin(MAIL_ANTIFLOOD_EMAILS, MAIL_ANTIFLOOD_PAUSE));
+				// Create a message
+				$message = (new Swift_Message($options['subject']))
+					->setFrom([MAIL_USERNAME => EMAIL_FROM])
+					->setTo($row[$email_col_name])
+					->setBody(strip_tags($temail_message), 'text/plain')
+					->addPart($temail_message, 'text/html')
+					->attach(Swift_Attachment::fromPath($output_file))
+				;
+				foreach($attchments as $att):
+					$message->attach(Swift_Attachment::fromPath($att));
+				endforeach;
+				
+				if($mailer->send($message)):
+					echo "Sent email: " . $row[$email_col_name] . "\r\n";
+					$ff = @file_get_contents('.done.emails.txt');
+					file_put_contents('.done.emails.txt', $ff . $row[$email_col_name] . ';');
+				else:
+					echo 'Problem with send email:' . $row[$email_col_name] . "\r\n";
+				endif;
+			endif;
+			++$i;
+		}
+	}
+
+	fclose($handle);
 }
