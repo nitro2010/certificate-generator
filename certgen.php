@@ -126,7 +126,7 @@ if (false !== ($handle = fopen($data_file, 'r'))) {
 				$row[trim($csv_header[$key])] = preg_replace('/\x{FEFF}/u', '', $value);
 			}
 			
-			$ff = @file_get_contents('.done.emails.txt');
+			$ff = @file_get_contents($output.DIRECTORY_SEPARATOR.'.done.emails.txt');
 			if(preg_match('/' . $row[$email_col_name] . '/', $ff)):
 				echo "This email is omitted, because certificate was sent earlier: " . $row[$email_col_name] . "\r\n";
 				continue;
@@ -255,8 +255,8 @@ if (false !== ($handle = fopen($data_file, 'r'))) {
 				
 				if($mailer->send($message)):
 					echo "Sent email: " . $row[$email_col_name] . "\r\n";
-					$ff = @file_get_contents('.done.emails.txt');
-					file_put_contents('.done.emails.txt', $ff . $row[$email_col_name] . ';');
+					$ff = @file_get_contents($output.DIRECTORY_SEPARATOR.'.done.emails.txt');
+					file_put_contents($output.DIRECTORY_SEPARATOR.'.done.emails.txt', $ff . $row[$email_col_name] . ';');
 				else:
 					echo 'Problem with send email:' . $row[$email_col_name] . "\r\n";
 				endif;
